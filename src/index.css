@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+:root {
+  font-family: Inter, Roboto, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #0f172a;
+  background-color: #f8fafc;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #f8fafc;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* FullCalendar corporate look */
+.fc {
+  font-family: Inter, Roboto, system-ui, sans-serif;
+  --fc-border-color: #e2e8f0;
+  --fc-page-bg-color: #ffffff;
+  --fc-neutral-bg-color: #f8fafc;
+  --fc-event-bg-color: #1e3a8a;
+  --fc-event-border-color: #1e3a8a;
+  --fc-event-text-color: #ffffff;
+}
+
+.fc .fc-toolbar-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.fc .fc-daygrid-day-number {
+  font-size: 0.75rem;
+  color: #475569;
+}
+
+.fc .fc-day-today {
+  background: #eff6ff;
+}
+
+.fc .fc-day-today .fc-daygrid-day-number {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.fc .fc-daygrid-event {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  line-height: 1.1rem;
+}
+
+.fc .fc-timegrid-event {
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.fc .fc-timegrid-event .fc-event-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.fc .fc-timegrid-axis-cushion,
+.fc .fc-timegrid-slot-label-cushion {
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.fc .fc-col-header-cell-cushion {
+  color: #334155;
+  font-weight: 600;
+}
+
+/* Touch-friendly sizing */
+.fc .fc-daygrid-day-frame {
+  min-height: 96px;
+}
+
+.fc .fc-scrollgrid,
+.fc .fc-scrollgrid-section > td {
+  border-color: #e2e8f0;
+}
+
+.fc .fc-timegrid-slot {
+  height: 2.5rem;
+}
+
+/* Hide scrollbar for horizontal chips */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Kiosk mode tweaks */
+.kiosk-mode {
+  padding-top: 1.5rem;
+  padding-bottom: 1.5rem;
+}
+
+.kiosk-mode header {
+  position: sticky;
+  top: 1rem;
+  z-index: 20;
+}
+
+.kiosk-mode .fc .fc-daygrid-day-frame {
+  min-height: 120px;
+}
+
+.kiosk-mode .fc .fc-timegrid-slot {
+  height: 3rem;
+}
