@@ -48,6 +48,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "./ui/sheet"
+import { normalizeRows } from "../adapters/eventAdapter"
 
 const sheetsConfig = {
   spreadsheetId: "19KhdY0IHhYTxxS6eG3JlMTg1gh7U4uHr",
@@ -65,6 +66,8 @@ const apiConfig = {
 const columnMap = {
   fecha: "Fecha",
   hora: "Hora",
+  horaInicio: "Hora Inicio",
+  horaFin: "Hora Fin",
   actividad: "Actividad",
   descripcion: "Descripcion",
   responsable: "Responsable",
@@ -221,49 +224,27 @@ const formatShortTime = (date) =>
 
 const parseDateTime = (fecha, hora) => {
   if (!fecha) return null
-  const safeHora = hora && hora.trim().length > 0 ? hora : "09:00"
+  const safeHora = hora && String(hora).trim().length > 0 ? String(hora).trim() : "09:00"
   const date = new Date(`${fecha}T${safeHora}:00`)
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-const mapRowsToEvents = (rows) =>
-  rows
+/** Convierte filas normalizadas (con horaInicio/horaFin) a eventos FullCalendar. */
+const mapInternalRowsToEvents = (internalRows) =>
+  (internalRows || [])
     .map((item, index) => {
-      const fecha = item[columnMap.fecha]
-      const hora = item[columnMap.hora]
-      const start = parseDateTime(fecha, hora)
+      const horaInicio = item.horaInicio ?? item.hora ?? "09:00"
+      const horaFin = item.horaFin ?? "10:00"
+      const start = parseDateTime(item.fecha, horaInicio)
       if (!start) return null
-      const end = new Date(start.getTime() + 60 * 60 * 1000)
+      const end = item.horaFin
+        ? parseDateTime(item.fecha, item.horaFin)
+        : new Date(start.getTime() + 60 * 60 * 1000)
       return {
         id: item.id || `evt-${index + 1}`,
-        title: item[columnMap.actividad] || "Actividad",
-        start,
-        end,
-        extendedProps: {
-          descripcion: item[columnMap.descripcion] || "Sin descripción.",
-          responsable: item[columnMap.responsable] || "Sin asignar",
-          tipo: item[columnMap.tipo] || "General",
-          prioridad: item["Prioridad"] || "Media",
-          area: item[columnMap.area] || [],
-          enlace: item[columnMap.enlace] || "",
-          fecha,
-          hora: hora || "09:00",
-        },
-      }
-    })
-    .filter(Boolean)
-
-const mapApiEvents = (rows) =>
-  rows
-    .map((item, index) => {
-      const start = parseDateTime(item.fecha, item.hora)
-      if (!start) return null
-      const end = new Date(start.getTime() + 60 * 60 * 1000)
-      return {
-        id: item.id || `api-${index + 1}`,
         title: item.actividad || "Actividad",
         start,
-        end,
+        end: end || new Date(start.getTime() + 60 * 60 * 1000),
         extendedProps: {
           descripcion: item.descripcion || "Sin descripción.",
           responsable: item.responsable || "Sin asignar",
@@ -272,11 +253,18 @@ const mapApiEvents = (rows) =>
           area: item.area || [],
           enlace: item.enlace || "",
           fecha: item.fecha,
-          hora: item.hora || "09:00",
+          horaInicio: horaInicio || "09:00",
+          horaFin: horaFin || "10:00",
         },
       }
     })
     .filter(Boolean)
+
+const mapRowsToEvents = (rows) =>
+  mapInternalRowsToEvents(normalizeRows(Array.isArray(rows) ? rows : []))
+
+const mapApiEvents = (rows) =>
+  mapInternalRowsToEvents(normalizeRows(Array.isArray(rows) ? rows : []))
 
 const normalizeText = (value) =>
   value
@@ -391,7 +379,8 @@ const mapGridToEvents = (gridRows) => {
               area: [],
               enlace: "",
               fecha: eventDate.toISOString().slice(0, 10),
-              hora: "09:00",
+              horaInicio: "09:00",
+              horaFin: "10:00",
             },
           })
         })
@@ -431,7 +420,8 @@ export default function CompanyCalendar() {
   const [presentationIndex, setPresentationIndex] = useState(0)
   const [formData, setFormData] = useState({
     fecha: "",
-    hora: "09:00",
+    horaInicio: "09:00",
+    horaFin: "10:00",
     actividad: "",
     descripcion: "",
     responsable: "",
@@ -726,7 +716,8 @@ export default function CompanyCalendar() {
     setEditingEventId(null)
     setFormData({
       fecha: "",
-      hora: "09:00",
+      horaInicio: "09:00",
+      horaFin: "10:00",
       actividad: "",
       descripcion: "",
       responsable: "",
@@ -745,17 +736,20 @@ export default function CompanyCalendar() {
       return
     }
 
-    const start = parseDateTime(formData.fecha, formData.hora)
+    const start = parseDateTime(formData.fecha, formData.horaInicio)
     if (!start) {
-      setFormError("Fecha u hora inválida.")
+      setFormError("Fecha u hora de inicio inválida.")
       return
     }
-    const end = new Date(start.getTime() + 60 * 60 * 1000)
+    const end =
+      (formData.horaFin ? parseDateTime(formData.fecha, formData.horaFin) : null) ||
+      new Date(start.getTime() + 60 * 60 * 1000)
 
     if (apiConfig.baseUrl) {
       const payload = {
         fecha: formData.fecha,
-        hora: formData.hora || "09:00",
+        hora_inicio: formData.horaInicio || "09:00",
+        hora_final: formData.horaFin || "10:00",
         actividad: formData.actividad,
         descripcion: formData.descripcion || "Sin descripción.",
         responsable: formData.responsable || "Sin asignar",
@@ -825,7 +819,8 @@ export default function CompanyCalendar() {
   const buildCsvData = () => {
     const headers = [
       "Fecha",
-      "Hora",
+      "Hora inicio",
+      "Hora fin",
       "Actividad",
       "Descripcion",
       "Responsable",
@@ -836,7 +831,8 @@ export default function CompanyCalendar() {
     const source = apiConfig.baseUrl ? eventsData : localEvents
     const rows = source.map((event) => [
       event.extendedProps.fecha,
-      event.extendedProps.hora,
+      event.extendedProps.horaInicio ?? event.extendedProps.hora ?? "09:00",
+      event.extendedProps.horaFin ?? "10:00",
       event.title,
       event.extendedProps.descripcion,
       event.extendedProps.responsable,
@@ -892,7 +888,8 @@ export default function CompanyCalendar() {
         : []
     setFormData({
       fecha: event.extendedProps.fecha,
-      hora: event.extendedProps.hora || "09:00",
+      horaInicio: event.extendedProps.horaInicio ?? event.extendedProps.hora ?? "09:00",
+      horaFin: event.extendedProps.horaFin ?? "10:00",
       actividad: event.title,
       descripcion: event.extendedProps.descripcion || "",
       responsable: event.extendedProps.responsable || "",
@@ -1523,17 +1520,27 @@ export default function CompanyCalendar() {
                 </span>
               </label>
               <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Hora
+                Hora inicio
                 <input
                   type="time"
-                  value={formData.hora}
-                  onChange={(event) =>
-                    handleFormChange("hora", event.target.value)
-                  }
+                  value={formData.horaInicio}
+                  onChange={(e) => handleFormChange("horaInicio", e.target.value)}
                   className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
                 <span className="text-xs text-slate-400">
                   Opcional (por defecto 09:00)
+                </span>
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                Hora fin
+                <input
+                  type="time"
+                  value={formData.horaFin}
+                  onChange={(e) => handleFormChange("horaFin", e.target.value)}
+                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                />
+                <span className="text-xs text-slate-400">
+                  Opcional (por defecto 10:00)
                 </span>
               </label>
               <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
@@ -1762,7 +1769,10 @@ export default function CompanyCalendar() {
                         </p>
                         <p className="text-xs text-slate-500">
                           {event.extendedProps.fecha} ·{" "}
-                          {event.extendedProps.hora}
+                          {event.extendedProps.horaInicio ?? event.extendedProps.hora}
+                          {event.extendedProps.horaFin
+                            ? ` – ${event.extendedProps.horaFin}`
+                            : ""}
                         </p>
                         <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                           <span>Tipo: {event.extendedProps.tipo}</span>
@@ -1853,10 +1863,13 @@ export default function CompanyCalendar() {
                 </div>
                 <div>
                   <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                    Hora
+                    Hora inicio – Hora fin
                   </p>
                   <p className="text-sm font-medium text-slate-900">
-                    {selectedEvent.extendedProps.hora}
+                    {selectedEvent.extendedProps.horaInicio ?? selectedEvent.extendedProps.hora ?? "09:00"}
+                    {selectedEvent.extendedProps.horaFin
+                      ? ` – ${selectedEvent.extendedProps.horaFin}`
+                      : ""}
                   </p>
                 </div>
                 <div>
