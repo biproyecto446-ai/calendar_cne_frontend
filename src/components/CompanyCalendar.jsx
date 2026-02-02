@@ -464,8 +464,16 @@ export default function CompanyCalendar() {
           if (isInitial) setLoading(false)
           return
         }
+        // Cargar datos desde archivo JSON local cuando no hay API configurada
         if (!enableSheets) {
-          setEventsData([])
+          const response = await fetch("/events.json", { cache: "no-store" })
+          if (response.ok) {
+            const data = await response.json()
+            const mapped = mapApiEvents(Array.isArray(data) ? data : [])
+            setEventsData(mapped.length ? mapped : mapRowsToEvents(fallbackEvents))
+          } else {
+            setEventsData(mapRowsToEvents(fallbackEvents))
+          }
           if (isInitial) setLoading(false)
           return
         }
