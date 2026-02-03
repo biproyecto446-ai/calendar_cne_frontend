@@ -48,6 +48,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "./ui/sheet"
+import FormCalendar from "./FormCalendar"
 import { normalizeRows } from "../adapters/eventAdapter"
 
 const sheetsConfig = {
@@ -62,6 +63,10 @@ const sheetCsvUrl = `https://docs.google.com/spreadsheets/d/${sheetsConfig.sprea
 const apiConfig = {
   baseUrl: import.meta.env.VITE_EVENTS_API || "",
 }
+
+/** API principal del calendario CNE (siempre se usa como fuente de datos) */
+const CALENDAR_CNE_API = "https://seguimiento-pmo-api.actoreselectorales.com/api/calendar-cne"
+// const CALENDAR_CNE_API = "http://localhost:3001/api/calendar-cne"
 
 const columnMap = {
   fecha: "Fecha",
@@ -85,7 +90,6 @@ const componentOptions = [
   "Ciberseguridad y Seguridad de la Información",
   "Cronograma PMO",
   "Estrategia de Comunicación",
-  "Herramienta Custodio",
   "Medios de Capacitación - Actores Electorales",
   "Mesa de Ayuda",
   "SIMAE (Sistema Nacional de Monitoreo y Análitica Electoral)",
@@ -410,6 +414,8 @@ export default function CompanyCalendar() {
   const [loadError, setLoadError] = useState("")
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
+  const [formModalOpen, setFormModalOpen] = useState(false)
+  const [formInitialData, setFormInitialData] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isKioskMode, setIsKioskMode] = useState(false)
@@ -418,18 +424,6 @@ export default function CompanyCalendar() {
   const weeklyScrollRef = useRef(null)
   const [presentationActive, setPresentationActive] = useState(false)
   const [presentationIndex, setPresentationIndex] = useState(0)
-  const [formData, setFormData] = useState({
-    fecha: "",
-    horaInicio: "09:00",
-    horaFin: "10:00",
-    actividad: "",
-    descripcion: "",
-    responsable: "",
-    tipo: "",
-    prioridad: "Media",
-    area: [],
-    enlace: "",
-  })
   const [formError, setFormError] = useState("")
   const [formSuccess, setFormSuccess] = useState("")
   const [showCsvPreview, setShowCsvPreview] = useState(false)
@@ -441,20 +435,21 @@ export default function CompanyCalendar() {
         setLoadError("")
         if (isInitial) setLoading(true)
         if (isManual) setIsRefreshing(true)
-        if (apiConfig.baseUrl) {
-          const response = await fetch(`${apiConfig.baseUrl}/events`, {
-            cache: "no-store",
-          })
-          if (!response.ok) {
-            throw new Error("No se pudo leer la API local.")
+        // Siempre intentar primero la API del calendario CNE
+        try {
+          const response = await fetch(CALENDAR_CNE_API, { cache: "no-store" })
+          if (response.ok) {
+            const data = await response.json()
+            const mapped = mapApiEvents(Array.isArray(data) ? data : [])
+            setEventsData(mapped.length ? mapped : mapRowsToEvents(fallbackEvents))
+            if (isInitial) setLoading(false)
+            if (isManual) setIsRefreshing(false)
+            return
           }
-          const data = await response.json()
-          const mapped = mapApiEvents(Array.isArray(data) ? data : [])
-          setEventsData(mapped.length ? mapped : mapRowsToEvents(fallbackEvents))
-          if (isInitial) setLoading(false)
-          return
+        } catch (_) {
+          // Si la API falla, continuar con fuentes de respaldo
         }
-        // Cargar datos desde archivo JSON local cuando no hay API configurada
+        // Respaldo: JSON local o Google Sheet cuando la API no está disponible
         if (!enableSheets) {
           const response = await fetch("/events.json", { cache: "no-store" })
           if (response.ok) {
@@ -705,115 +700,50 @@ export default function CompanyCalendar() {
     )
   }
 
-  const handleFormChange = (field, value) => {
-    setFormSuccess("")
-    setFormData((prev) => ({ ...prev, [field]: value }))
-  }
-
-  const resetForm = () => {
-    setFormError("")
-    setFormSuccess("")
-    setEditingEventId(null)
-    setFormData({
-      fecha: "",
-      horaInicio: "09:00",
-      horaFin: "10:00",
-      actividad: "",
-      descripcion: "",
-      responsable: "",
-      tipo: "",
-      prioridad: "Media",
-      area: [],
-      enlace: "",
+  const handleFormSubmit = (payload, editingId) => {
+    setIsSaving(true)
+    const endpoint = editingId
+      ? `${CALENDAR_CNE_API}/${editingId}`
+      : CALENDAR_CNE_API
+    const method = editingId ? "PUT" : "POST"
+    return fetch(endpoint, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     })
+      .then(async (res) => {
+        if (!res.ok) {
+          let message = "Error en la respuesta del servidor"
+          try {
+            const body = await res.json()
+            const msg = body.message
+            if (Array.isArray(msg)) {
+              message = msg.join(". ")
+            } else if (msg && typeof msg === "string") {
+              message = msg
+            } else if (body.error) {
+              message = body.error
+            }
+          } catch {
+            // Si el cuerpo no es JSON, usar mensaje por defecto
+          }
+          throw new Error(message)
+        }
+        return fetchEvents({ isManual: true })
+      })
+      .then(() => {
+        setEditingEventId(null)
+        setFormInitialData(null)
+      })
+      .finally(() => setIsSaving(false))
   }
 
-  const handleAddEvent = () => {
-    setFormError("")
-    setFormSuccess("")
-    if (!formData.fecha || !formData.actividad) {
-      setFormError("Fecha y actividad son obligatorias.")
-      return
+  const handleFormModalClose = (openState) => {
+    if (!openState) {
+      setEditingEventId(null)
+      setFormInitialData(null)
     }
-
-    const start = parseDateTime(formData.fecha, formData.horaInicio)
-    if (!start) {
-      setFormError("Fecha u hora de inicio inválida.")
-      return
-    }
-    const end =
-      (formData.horaFin ? parseDateTime(formData.fecha, formData.horaFin) : null) ||
-      new Date(start.getTime() + 60 * 60 * 1000)
-
-    if (apiConfig.baseUrl) {
-      const payload = {
-        fecha: formData.fecha,
-        hora_inicio: formData.horaInicio || "09:00",
-        hora_final: formData.horaFin || "10:00",
-        actividad: formData.actividad,
-        descripcion: formData.descripcion || "Sin descripción.",
-        responsable: formData.responsable || "Sin asignar",
-        tipo: formData.tipo || "General",
-        prioridad: formData.prioridad || "Media",
-        area: formData.area || [],
-        enlace: formData.enlace || "",
-      }
-
-      setIsSaving(true)
-      const endpoint = editingEventId
-        ? `${apiConfig.baseUrl}/events/${editingEventId}`
-        : `${apiConfig.baseUrl}/events`
-      const method = editingEventId ? "PUT" : "POST"
-
-      fetch(endpoint, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      })
-        .then(() => fetchEvents({ isManual: true }))
-        .then(() => {
-          setEditingEventId(null)
-          setFormSuccess(
-            editingEventId
-              ? "Actividad actualizada correctamente."
-              : "Actividad guardada correctamente."
-          )
-        })
-        .catch(() =>
-          setFormError("No se pudo guardar en el backend. Intenta de nuevo.")
-        )
-        .finally(() => setIsSaving(false))
-
-      resetForm()
-      return
-    }
-
-    const newEvent = {
-      id: `local-${Date.now()}`,
-      title: formData.actividad,
-      start,
-      end,
-      extendedProps: {
-        descripcion: formData.descripcion || "Sin descripción.",
-        responsable: formData.responsable || "Sin asignar",
-        tipo: formData.tipo || "General",
-        prioridad: formData.prioridad || "Media",
-        area: formData.area || [],
-        enlace: formData.enlace || "",
-        fecha: formData.fecha,
-        hora: formData.hora || "09:00",
-      },
-    }
-
-    const nextEvents = [newEvent, ...localEvents]
-    setLocalEvents(nextEvents)
-    localStorage.setItem(
-      "company-calendar-events",
-      JSON.stringify(nextEvents)
-    )
-
-    setFormSuccess("Actividad guardada correctamente.")
-    resetForm()
+    setFormModalOpen(openState)
   }
 
   const buildCsvData = () => {
@@ -879,14 +809,13 @@ export default function CompanyCalendar() {
   }
 
   const handleEditEvent = (event) => {
-    setEditingEventId(event.id)
     const areaValue = event.extendedProps.area
     const areaList = Array.isArray(areaValue)
       ? areaValue
       : areaValue
         ? [areaValue]
         : []
-    setFormData({
+    setFormInitialData({
       fecha: event.extendedProps.fecha,
       horaInicio: event.extendedProps.horaInicio ?? event.extendedProps.hora ?? "09:00",
       horaFin: event.extendedProps.horaFin ?? "10:00",
@@ -898,6 +827,8 @@ export default function CompanyCalendar() {
       area: areaList,
       enlace: event.extendedProps.enlace || "",
     })
+    setEditingEventId(event.id)
+    setFormModalOpen(true)
   }
 
   const handleDeleteEvent = (eventId) => {
@@ -1107,27 +1038,27 @@ export default function CompanyCalendar() {
           </div>
         </header>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2 text-sm font-medium text-slate-600">
-            <span className="rounded-full bg-brand-50 px-3 py-1 text-brand-800">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between px-2 py-1">
+          <div className="flex items-center gap-3 text-sm font-normal text-slate-700">
+            <span className="rounded-xl bg-slate-50 px-4 py-1 text-brand-900 border border-slate-200">
               {loading
                 ? "Cargando eventos..."
-                : `${events.length} eventos visibles`}
+                : `${events.length} visibles`}
             </span>
-            {!loading ? (
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-600">
-                {allEvents.length} total
+            {!loading && (
+              <span className="rounded-xl px-4 py-1 text-slate-400 border border-slate-200 bg-white">
+                {allEvents.length} en total
               </span>
-            ) : null}
+            )}
           </div>
-          <div className="flex w-full flex-col gap-2 sm:max-w-2xl sm:flex-row">
+          <div className="flex w-full flex-col gap-2 sm:flex-row sm:max-w-xl">
             <div className="flex-1">
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Buscar actividad, responsable o componente"
-                className="h-11 w-full rounded-md border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="Buscar por actividad, responsable o componente"
+                className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 transition"
               />
             </div>
             <Select value={filterType} onValueChange={setFilterType}>
@@ -1154,6 +1085,19 @@ export default function CompanyCalendar() {
                 ))}
               </SelectContent>
             </Select>
+            {!isKioskMode ? (
+                  <Button
+                    onClick={() => {
+                      setEditingEventId(null)
+                      setFormInitialData(null)
+                      setFormModalOpen(true)
+                    }}
+                    className="bg-slate-600 hover:bg-slate-700 h-11"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Crear Nuevo Evento
+                  </Button>
+                ) : null}
           </div>
         </div>
 
@@ -1468,343 +1412,53 @@ export default function CompanyCalendar() {
 
         {!isKioskMode ? (
           <Card className="border-slate-200">
-          <CardHeader className="border-b border-slate-100">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">
-                  Registrar nueva actividad
-                </h2>
-                <p className="text-sm text-slate-500">
-                  Completa los campos clave y guarda. Puedes exportar el CSV en
-                  formato claro para Excel.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={handlePreviewCsv}>
-                  Vista previa CSV
-                </Button>
-                <Button variant="outline" onClick={handleExportCsv}>
-                  <Download className="h-4 w-4" />
-                  Descargar CSV
-                </Button>
-                <Button variant="outline" onClick={handleExportXlsx}>
-                  Exportar Excel
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-4 p-6">
-            {formError ? (
-              <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
-                {formError}
-              </p>
-            ) : null}
-            {formSuccess ? (
-              <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                {formSuccess}
-              </p>
-            ) : null}
-            <div className="grid gap-4 md:grid-cols-3">
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Fecha
-                <input
-                  type="date"
-                  value={formData.fecha}
-                  onChange={(event) =>
-                    handleFormChange("fecha", event.target.value)
-                  }
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-                <span className="text-xs text-slate-400">
-                  Obligatoria
-                </span>
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Hora inicio
-                <input
-                  type="time"
-                  value={formData.horaInicio}
-                  onChange={(e) => handleFormChange("horaInicio", e.target.value)}
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-                <span className="text-xs text-slate-400">
-                  Opcional (por defecto 09:00)
-                </span>
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Hora fin
-                <input
-                  type="time"
-                  value={formData.horaFin}
-                  onChange={(e) => handleFormChange("horaFin", e.target.value)}
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-                <span className="text-xs text-slate-400">
-                  Opcional (por defecto 10:00)
-                </span>
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Actividad
-                <input
-                  type="text"
-                  value={formData.actividad}
-                  onChange={(event) =>
-                    handleFormChange("actividad", event.target.value)
-                  }
-                  placeholder="Ej. Mesa de ayuda"
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-                <span className="text-xs text-slate-400">
-                  Obligatoria
-                </span>
-              </label>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Tipo de actividad
-                <input
-                  type="text"
-                  value={formData.tipo}
-                  onChange={(event) =>
-                    handleFormChange("tipo", event.target.value)
-                  }
-                  placeholder="Ej. Reunión, Capacitación"
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-                <span className="text-xs text-slate-400">
-                  Opcional, describe el tipo general
-                </span>
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Prioridad
-                <select
-                  value={formData.prioridad}
-                  onChange={(event) =>
-                    handleFormChange("prioridad", event.target.value)
-                  }
-                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                >
-                  <option value="Alta">Alta</option>
-                  <option value="Media">Media</option>
-                  <option value="Baja">Baja</option>
-                </select>
-                <span className="text-xs text-slate-400">
-                  Controla el estilo visual de la tarjeta
-                </span>
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Área responsable (Componentes)
-                <div className="rounded-md border border-slate-200 bg-white p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                    <span>Selecciona uno o varios componentes</span>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleFormChange("area", componentOptions)}
-                        className="rounded-md border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-50"
-                      >
-                        Seleccionar todos
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleFormChange("area", [])}
-                        className="rounded-md border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-50"
-                      >
-                        Limpiar selección
-                      </button>
-                    </div>
-                  </div>
-                  {formData.area.length > 0 ? (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {formData.area.map((area) => (
-                        <span
-                          key={area}
-                          className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-800"
-                        >
-                          {area}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {componentOptions.map((component) => {
-                      const checked = formData.area.includes(component)
-                      return (
-                        <label
-                          key={component}
-                          className={`flex items-center gap-2 rounded-md border px-2 py-2 text-sm transition ${
-                            checked
-                              ? "border-brand-300 bg-brand-50 text-brand-900"
-                              : "border-slate-200 text-slate-600"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(event) => {
-                              const next = event.target.checked
-                                ? [...formData.area, component]
-                                : formData.area.filter(
-                                    (item) => item !== component
-                                  )
-                              handleFormChange("area", next)
-                            }}
-                            className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                          />
-                          <span>{component}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
+            <CardHeader className="border-b border-slate-100">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Actividades del calendario
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    Registra nuevas actividades o exporta el calendario a CSV/Excel.
+                  </p>
                 </div>
-              </label>
-            </div>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-              Descripción
-              <textarea
-                rows={4}
-                value={formData.descripcion}
-                onChange={(event) =>
-                  handleFormChange("descripcion", event.target.value)
-                }
-                placeholder="Detalles clave de la actividad"
-                className="rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-              />
-            </label>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Responsable
-                <input
-                  type="text"
-                  value={formData.responsable}
-                  onChange={(event) =>
-                    handleFormChange("responsable", event.target.value)
-                  }
-                  placeholder="Nombre de la persona"
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Enlace
-                <input
-                  type="url"
-                  value={formData.enlace}
-                  onChange={(event) =>
-                    handleFormChange("enlace", event.target.value)
-                  }
-                  placeholder="https://"
-                  className="h-10 rounded-md border border-slate-200 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                />
-              </label>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-              <Button
-                onClick={handleAddEvent}
-                disabled={isSaving || !formData.fecha || !formData.actividad}
-                className="w-full sm:w-auto"
-                size="lg"
-              >
-                <Plus className="h-4 w-4" />
-                {editingEventId ? "Actualizar actividad" : "Guardar actividad"}
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={resetForm}
-                className="w-full sm:w-auto"
-              >
-                Limpiar
-              </Button>
-              {editingEventId ? (
-                <Button
-                  variant="outline"
-                  onClick={() => setEditingEventId(null)}
-                  className="w-full sm:w-auto"
-                >
-                  Cancelar edición
-                </Button>
-              ) : null}
-            </div>
-          </CardContent>
-        </Card>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    onClick={() => {
+                      setEditingEventId(null)
+                      setFormInitialData(null)
+                      setFormModalOpen(true)
+                    }}
+                  >
+                    <Plus className="h-4 w-4" />
+                    Registrar nueva actividad
+                  </Button>
+                  <Button variant="outline" onClick={handlePreviewCsv}>
+                    Vista previa CSV
+                  </Button>
+                  <Button variant="outline" onClick={handleExportCsv}>
+                    <Download className="h-4 w-4" />
+                    Descargar CSV
+                  </Button>
+                  <Button variant="outline" onClick={handleExportXlsx}>
+                    Exportar Excel
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+          </Card>
         ) : null}
 
-        {!isKioskMode ? (
-          <Card className="border-slate-200">
-          <CardHeader className="border-b border-slate-100">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">
-                  Gestión de actividades
-                </h2>
-                <p className="text-sm text-slate-500">
-                  Edita o elimina actividades almacenadas en el backend.
-                </p>
-              </div>
-              <Badge variant="outline">
-                {apiConfig.baseUrl ? "API activa" : "API no configurada"}
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="grid gap-4 p-6">
-            {!apiConfig.baseUrl ? (
-              <p className="text-sm text-slate-500">
-                Configura `VITE_EVENTS_API` en `frontend/.env` para habilitar
-                edición y eliminación desde la API.
-              </p>
-            ) : (
-              <div className="grid gap-3">
-                {eventsData.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    No hay actividades registradas en el backend.
-                  </p>
-                ) : (
-                  eventsData.map((event) => (
-                    <div
-                      key={event.id}
-                      className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between"
-                    >
-                      <div className="space-y-1">
-                        <p className="text-sm font-semibold text-slate-900">
-                          {event.title}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          {event.extendedProps.fecha} ·{" "}
-                          {event.extendedProps.horaInicio ?? event.extendedProps.hora}
-                          {event.extendedProps.horaFin
-                            ? ` – ${event.extendedProps.horaFin}`
-                            : ""}
-                        </p>
-                        <div className="flex flex-wrap gap-2 text-xs text-slate-500">
-                          <span>Tipo: {event.extendedProps.tipo}</span>
-                          <span>Área: {event.extendedProps.area}</span>
-                          <span>
-                            Responsable: {event.extendedProps.responsable}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="outline"
-                          onClick={() => handleEditEvent(event)}
-                        >
-                          Editar
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          onClick={() => handleDeleteEvent(event.id)}
-                          disabled={isDeleting}
-                        >
-                          Eliminar
-                        </Button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        ) : null}
+        <FormCalendar
+          open={formModalOpen}
+          onOpenChange={handleFormModalClose}
+          onSubmit={handleFormSubmit}
+          initialData={formInitialData}
+          editingEventId={editingEventId}
+          componentOptions={componentOptions}
+          isSaving={isSaving}
+        />
+
       </div>
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
